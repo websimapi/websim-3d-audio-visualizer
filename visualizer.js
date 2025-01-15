@@ -154,8 +154,8 @@ function init() {
   scene.add(directionalLight2);
   
   // Add point lights for dynamic lighting
-  const colors = [0xff0000, 0x00ff00, 0x0000ff, 0xff00ff];
-  colors.forEach((color, i) => {
+  const lightColors = [0xff0000, 0x00ff00, 0x0000ff, 0xff00ff];
+  lightColors.forEach((color, i) => {
     const light = new THREE.PointLight(color, 0.5, 100);
     light.position.set(
       Math.cos(i * Math.PI / 2) * 30,
