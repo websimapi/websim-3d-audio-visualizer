@@ -19,6 +19,10 @@ body {
   filter: blur(0.5px);
 }
 
+#visualizer canvas {
+  transition: transform 0.5s ease-in-out;
+}
+
 #start-btn {
   position: absolute;
   top: 50%;

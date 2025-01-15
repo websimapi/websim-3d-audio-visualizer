@@ -33,6 +33,58 @@ let energyHistory = new Array(30).fill(0);
 let peakEnergy = 0;
 let lastUpdate = 0;
 
+// Enhanced tempo and rhythm detection
+const TEMPO_DETECTION = {
+  beatHistory: [],
+  lastBeat: 0,
+  currentTempo: 120,
+  beatThreshold: 0.15,
+  minTempo: 60,
+  maxTempo: 180
+};
+
+// Camera states for transitions
+const CAMERA_STATES = {
+  orbit: {
+    update: (camera, metrics) => {
+      camera.position.x = Math.sin(cameraRotation) * 100;
+      camera.position.z = Math.cos(cameraRotation) * 100;
+      camera.position.y = cameraHeight;
+      camera.lookAt(scene.position);
+    }
+  },
+  waves: {
+    update: (camera, metrics) => {
+      camera.position.set(0, 50, 50);
+      camera.lookAt(new THREE.Vector3(0, 0, 0));
+    }
+  },
+  particle: {
+    update: (camera, metrics) => {
+      camera.position.set(
+        Math.sin(Date.now() * 0.001) * 30,
+        Math.cos(Date.now() * 0.0015) * 30,
+        50 + Math.sin(Date.now() * 0.002) * 20
+      );
+      camera.lookAt(particleSystem.position);
+    }
+  },
+  rings: {
+    update: (camera, metrics) => {
+      camera.position.set(
+        Math.sin(Date.now() * 0.0005) * 80,
+        Math.cos(Date.now() * 0.0008) * 40,
+        Math.sin(Date.now() * 0.001) * 60
+      );
+      camera.lookAt(rings[Math.floor(Date.now() * 0.001) % rings.length].position);
+    }
+  }
+};
+
+let currentCameraState = 'orbit';
+let lastCameraTransition = 0;
+const CAMERA_TRANSITION_INTERVAL = 10000; // 10 seconds between transitions
+
 // Enhanced frequency analysis
 function getFrequencyBandValue(startFreq, endFreq) {
   const nyquist = analyser.context.sampleRate / 2;
@@ -86,6 +138,33 @@ function getAudioMetrics() {
   metrics.peakEnergy = peakEnergy;
   
   return metrics;
+}
+
+// Enhanced audio analysis
+function detectTempo(metrics) {
+  const now = Date.now();
+  const energyThreshold = 0.6;
+  
+  if (metrics.energy > energyThreshold && 
+      now - TEMPO_DETECTION.lastBeat > 200) { // Minimum 200ms between beats
+    
+    TEMPO_DETECTION.beatHistory.push(now - TEMPO_DETECTION.lastBeat);
+    if (TEMPO_DETECTION.beatHistory.length > 8) {
+      TEMPO_DETECTION.beatHistory.shift();
+    }
+    
+    // Calculate average tempo from beat history
+    const averageInterval = TEMPO_DETECTION.beatHistory.reduce((a, b) => a + b, 0) / 
+                          TEMPO_DETECTION.beatHistory.length;
+    TEMPO_DETECTION.currentTempo = Math.min(
+      Math.max(60000 / averageInterval, TEMPO_DETECTION.minTempo),
+      TEMPO_DETECTION.maxTempo
+    );
+    
+    TEMPO_DETECTION.lastBeat = now;
+  }
+  
+  return TEMPO_DETECTION.currentTempo;
 }
 
 function createRing(radius) {
@@ -221,22 +300,40 @@ function animate() {
     const deltaTime = (Date.now() - lastUpdate) / 1000;
     lastUpdate = Date.now();
     
-    // Smooth energy transitions
-    lastAverageEnergy = lastAverageEnergy * 0.8 + metrics.energy * 0.2;
+    // Detect tempo and adjust visualization speed
+    const currentTempo = detectTempo(metrics);
+    const tempoFactor = (currentTempo - TEMPO_DETECTION.minTempo) / 
+                       (TEMPO_DETECTION.maxTempo - TEMPO_DETECTION.minTempo);
     
-    // Dynamic camera movement based on audio metrics
-    const cameraSpeed = SENSITIVITY.cameraRotation * 
-                       (1 + metrics.subBass.average * 2) * 
-                       (1 + metrics.peakEnergy);
+    // Camera state transitions
+    if (Date.now() - lastCameraTransition > CAMERA_TRANSITION_INTERVAL) {
+      const states = Object.keys(CAMERA_STATES);
+      const nextIndex = (states.indexOf(currentCameraState) + 1) % states.length;
+      currentCameraState = states[nextIndex];
+      lastCameraTransition = Date.now();
+    }
     
-    cameraRotation += cameraSpeed * deltaTime;
-    cameraHeight = Math.sin(Date.now() * SENSITIVITY.baseSpeed) * 
-                   15 * (1 + metrics.mid.average);
+    // Update camera based on current state
+    CAMERA_STATES[currentCameraState].update(camera, metrics);
     
-    camera.position.x = Math.sin(cameraRotation) * 100;
-    camera.position.z = Math.cos(cameraRotation) * 100;
-    camera.position.y = cameraHeight;
-    camera.lookAt(scene.position);
+    // Adjust rotation speeds based on tempo
+    const baseRotationSpeed = SENSITIVITY.cameraRotation * (1 + tempoFactor);
+    cameraRotation += baseRotationSpeed * deltaTime * (1 + metrics.energy);
+    
+    // Enhanced ring rotation based on tempo
+    rings.forEach((ring, index) => {
+      if (!ring.light) {
+        const ringSpeed = baseRotationSpeed * (index + 1) * (1 + tempoFactor);
+        ring.rotation.x += ringSpeed * metrics.lowMid.average;
+        ring.rotation.y += ringSpeed * metrics.highMid.average;
+        ring.rotation.z += ringSpeed * 0.5 * metrics.bass.average;
+        
+        // Pulse size with tempo
+        const basePulse = Math.sin(Date.now() * 0.001 * tempoFactor);
+        const pulseScale = 1 + basePulse * metrics.energy * 0.5;
+        ring.scale.set(pulseScale, pulseScale, pulseScale);
+      }
+    });
     
     // Enhanced particle system updates
     const positions = particleSystem.geometry.attributes.position.array;
