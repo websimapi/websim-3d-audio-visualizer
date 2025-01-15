@@ -6,46 +6,86 @@ const PARTICLE_COUNT = 2048;
 const WAVE_COUNT = 128;
 const RING_COUNT = 5;
 
-// Audio analysis bands
+// Enhanced audio analysis bands with more detail
 const BANDS = {
-  bass: [20, 140],
-  lowMid: [140, 400],
-  mid: [400, 2600],
-  highMid: [2600, 5200],
-  treble: [5200, 14000]
+  subBass: [20, 60],
+  bass: [60, 250],
+  lowMid: [250, 500],
+  mid: [500, 2000],
+  highMid: [2000, 4000],
+  presence: [4000, 6000],
+  brilliance: [6000, 20000]
 };
 
-// Add dynamic sensitivity controls
+// Refined sensitivity controls with smoother transitions
 const SENSITIVITY = {
-  cameraRotation: 0.015,
-  particleMovement: 0.5,
-  colorIntensity: 0.7,
-  waveAmplitude: 15,
-  baseSpeed: 0.001
+  cameraRotation: 0.008,
+  particleMovement: 0.3,
+  colorIntensity: 0.8,
+  waveAmplitude: 12,
+  baseSpeed: 0.0005,
+  energyThreshold: 0.15,
+  peakDecay: 0.98
 };
 
 let lastAverageEnergy = 0;
-let energySmoothing = 0.8; // Smoothing factor for energy transitions
+let energyHistory = new Array(30).fill(0);
+let peakEnergy = 0;
+let lastUpdate = 0;
 
+// Enhanced frequency analysis
 function getFrequencyBandValue(startFreq, endFreq) {
   const nyquist = analyser.context.sampleRate / 2;
-  const startIndex = Math.round(startFreq / nyquist * dataArray.length);
-  const endIndex = Math.round(endFreq / nyquist * dataArray.length);
-  let total = 0;
+  const startIndex = Math.round((startFreq / nyquist) * dataArray.length);
+  const endIndex = Math.round((endFreq / nyquist) * dataArray.length);
+  let sum = 0;
+  let peak = 0;
   
   for(let i = startIndex; i < endIndex; i++) {
-    total += dataArray[i];
+    const value = dataArray[i] / 255;
+    sum += value;
+    peak = Math.max(peak, value);
   }
   
-  return total / (endIndex - startIndex) / 255;
+  return {
+    average: sum / (endIndex - startIndex),
+    peak: peak
+  };
 }
 
-function getAverageEnergy() {
-  let sum = 0;
+function getAudioMetrics() {
+  const metrics = {};
+  
+  // Calculate metrics for each frequency band
+  Object.entries(BANDS).forEach(([band, [low, high]]) => {
+    metrics[band] = getFrequencyBandValue(low, high);
+  });
+  
+  // Calculate overall energy
+  let totalEnergy = 0;
   for (let i = 0; i < dataArray.length; i++) {
-    sum += dataArray[i];
+    totalEnergy += dataArray[i];
   }
-  return sum / dataArray.length / 255;
+  metrics.energy = totalEnergy / (dataArray.length * 255);
+  
+  // Update energy history and calculate trends
+  energyHistory.push(metrics.energy);
+  energyHistory.shift();
+  
+  metrics.energyTrend = energyHistory.reduce((sum, energy) => sum + energy, 0) / energyHistory.length;
+  metrics.energyVariance = Math.sqrt(
+    energyHistory.reduce((sum, energy) => sum + Math.pow(energy - metrics.energyTrend, 2), 0) / energyHistory.length
+  );
+  
+  // Peak detection
+  if (metrics.energy > peakEnergy) {
+    peakEnergy = metrics.energy;
+  } else {
+    peakEnergy *= SENSITIVITY.peakDecay;
+  }
+  metrics.peakEnergy = peakEnergy;
+  
+  return metrics;
 }
 
 function createRing(radius) {
@@ -177,51 +217,61 @@ function animate() {
   
   if (analyser) {
     analyser.getByteFrequencyData(dataArray);
-    const waveformData = new Uint8Array(analyser.frequencyBinCount);
-    analyser.getByteTimeDomainData(waveformData);
+    const metrics = getAudioMetrics();
+    const deltaTime = (Date.now() - lastUpdate) / 1000;
+    lastUpdate = Date.now();
     
-    // Calculate average energy and smooth transitions
-    const currentEnergy = getAverageEnergy();
-    lastAverageEnergy = lastAverageEnergy * energySmoothing + 
-                        currentEnergy * (1 - energySmoothing);
+    // Smooth energy transitions
+    lastAverageEnergy = lastAverageEnergy * 0.8 + metrics.energy * 0.2;
     
-    const energyFactor = Math.pow(lastAverageEnergy, 2); // Non-linear scaling
+    // Dynamic camera movement based on audio metrics
+    const cameraSpeed = SENSITIVITY.cameraRotation * 
+                       (1 + metrics.subBass.average * 2) * 
+                       (1 + metrics.peakEnergy);
     
-    // Get frequency band values
-    const bass = getFrequencyBandValue(...BANDS.bass);
-    const lowMid = getFrequencyBandValue(...BANDS.lowMid);
-    const mid = getFrequencyBandValue(...BANDS.mid);
-    const highMid = getFrequencyBandValue(...BANDS.highMid);
-    const treble = getFrequencyBandValue(...BANDS.treble);
+    cameraRotation += cameraSpeed * deltaTime;
+    cameraHeight = Math.sin(Date.now() * SENSITIVITY.baseSpeed) * 
+                   15 * (1 + metrics.mid.average);
     
-    // Dynamic camera movement based on energy
-    cameraRotation += SENSITIVITY.cameraRotation * bass * energyFactor;
-    cameraHeight = Math.sin(Date.now() * SENSITIVITY.baseSpeed) * 10 * mid * energyFactor;
     camera.position.x = Math.sin(cameraRotation) * 100;
     camera.position.z = Math.cos(cameraRotation) * 100;
     camera.position.y = cameraHeight;
     camera.lookAt(scene.position);
     
-    // Update particles with smoother movement
+    // Enhanced particle system updates
     const positions = particleSystem.geometry.attributes.position.array;
     const colors = particleSystem.geometry.attributes.color.array;
     
     for(let i = 0; i < PARTICLE_COUNT * 3; i += 3) {
-      const value = dataArray[i/3] / 128.0;
-      const vector = new THREE.Vector3(positions[i], positions[i + 1], positions[i + 2]);
+      const vector = new THREE.Vector3(
+        positions[i], 
+        positions[i + 1], 
+        positions[i + 2]
+      );
       
       vector.normalize();
-      const scale = 50 + value * 30 * SENSITIVITY.particleMovement * energyFactor;
+      
+      // Dynamic particle movement based on frequency bands
+      const scale = 50 + 
+                    metrics.bass.average * 30 + 
+                    metrics.mid.peak * 20 + 
+                    metrics.highMid.average * 10;
+      
       vector.multiplyScalar(scale);
       
       positions[i] = vector.x;
       positions[i + 1] = vector.y;
       positions[i + 2] = vector.z;
       
-      // Enhanced color transitions
-      colors[i] = 0.5 + bass * SENSITIVITY.colorIntensity * energyFactor;
-      colors[i + 1] = 0.3 + mid * SENSITIVITY.colorIntensity * energyFactor;
-      colors[i + 2] = 0.2 + treble * SENSITIVITY.colorIntensity * energyFactor;
+      // Enhanced color transitions based on frequency analysis
+      const hue = (Date.now() * 0.0001 + i / PARTICLE_COUNT) % 1;
+      const saturation = 0.5 + metrics.energy * 0.5;
+      const lightness = 0.3 + metrics.peakEnergy * 0.4;
+      
+      const color = new THREE.Color().setHSL(hue, saturation, lightness);
+      colors[i] = color.r;
+      colors[i + 1] = color.g;
+      colors[i + 2] = color.b;
     }
     
     particleSystem.geometry.attributes.position.needsUpdate = true;
@@ -232,15 +282,23 @@ function animate() {
     const waveColors = waves.geometry.attributes.color.array;
     
     for(let i = 0; i < WAVE_COUNT * 3; i += 3) {
-      const value = waveformData[i/3] / 128.0 - 1;
-      wavePositions[i + 1] = value * SENSITIVITY.waveAmplitude * 
-                             (1 + lowMid) * energyFactor;
+      const index = Math.floor(i / 3);
+      const normalizedIndex = index / WAVE_COUNT;
       
-      // Dynamic wave coloring
-      const intensity = Math.abs(value);
-      const hue = (Date.now() * 0.001 + i / WAVE_COUNT) % 1;
-      const color = new THREE.Color().setHSL(hue, 0.8, 0.5 + intensity * 0.5);
+      // Complex wave form combining multiple frequency bands
+      const displacement = 
+        Math.sin(normalizedIndex * Math.PI * 2 + Date.now() * 0.001) * metrics.bass.average * 10 +
+        Math.sin(normalizedIndex * Math.PI * 4 + Date.now() * 0.002) * metrics.mid.average * 8 +
+        Math.sin(normalizedIndex * Math.PI * 8 + Date.now() * 0.003) * metrics.highMid.average * 6;
       
+      wavePositions[i + 1] = displacement * SENSITIVITY.waveAmplitude;
+      
+      // Dynamic wave coloring based on frequency content
+      const hue = (Date.now() * 0.0002 + normalizedIndex) % 1;
+      const saturation = 0.7 + metrics.energy * 0.3;
+      const lightness = 0.4 + Math.abs(displacement) * 0.3;
+      
+      const color = new THREE.Color().setHSL(hue, saturation, lightness);
       waveColors[i] = color.r;
       waveColors[i + 1] = color.g;
       waveColors[i + 2] = color.b;
@@ -252,35 +310,41 @@ function animate() {
     // Enhanced ring updates
     rings.forEach((ring, index) => {
       if (ring.light) {
-        // Update point lights
         const time = Date.now() * 0.001;
-        const radius = 30 + Math.sin(time + index) * 10;
+        const radius = 30 + 
+                      Math.sin(time + index) * 10 * metrics.energy;
+        
         ring.light.position.x = Math.cos(time * 0.5 + index) * radius;
         ring.light.position.y = Math.sin(time * 0.5 + index) * radius;
+        ring.light.intensity = 0.5 + metrics.peakEnergy * 0.5;
         
-        // Dynamic light color based on audio
+        // Dynamic light color based on frequency content
         const hue = (time * 0.1 + index * 0.2) % 1;
-        const color = new THREE.Color().setHSL(hue, 0.8, 0.5 + energyFactor * 0.5);
-        ring.light.color = color;
+        const saturation = 0.8 + metrics.mid.peak * 0.2;
+        const lightness = 0.5 + metrics.energy * 0.5;
+        
+        ring.light.color.setHSL(hue, saturation, lightness);
       } else {
-        // Update torus rings
-        const scale = 1 + (bass * 0.5 + mid * 0.3 + highMid * 0.2) * energyFactor;
+        // Torus ring updates based on frequency bands
+        const scale = 1 + 
+                     metrics.bass.average * 0.5 + 
+                     metrics.mid.average * 0.3 + 
+                     metrics.highMid.average * 0.2;
+        
         ring.scale.set(scale, scale, scale);
-        ring.rotation.x += 0.01 * (index + 1) * lowMid * energyFactor;
-        ring.rotation.y += 0.01 * (index + 1) * highMid * energyFactor;
-        ring.material.opacity = 0.3 + treble * 0.5 * energyFactor;
+        ring.rotation.x += metrics.lowMid.average * 0.05 * (index + 1);
+        ring.rotation.y += metrics.highMid.average * 0.05 * (index + 1);
+        ring.material.opacity = 0.3 + metrics.presence.average * 0.5;
         
         // Dynamic ring color
-        const hue = (Date.now() * 0.001 + index * 0.2) % 1;
-        ring.material.color.setHSL(hue, 0.8, 0.5 + energyFactor * 0.5);
+        const hue = (Date.now() * 0.0005 + index * 0.2) % 1;
+        const saturation = 0.7 + metrics.energy * 0.3;
+        const lightness = 0.4 + metrics.peakEnergy * 0.3;
+        
+        ring.material.color.setHSL(hue, saturation, lightness);
       }
     });
   }
-  
-  // Smoother rotation speeds based on energy
-  particleSystem.rotation.x += SENSITIVITY.baseSpeed * (1 + lastAverageEnergy);
-  particleSystem.rotation.y += SENSITIVITY.baseSpeed * 2 * (1 + lastAverageEnergy);
-  waves.rotation.z += SENSITIVITY.baseSpeed * 5 * (1 + lastAverageEnergy);
   
   renderer.render(scene, camera);
 }
